@@ -1,109 +1,144 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-m4a2yt GUI — bungkus M4A (Windows Voice Recorder) jadi MP4 untuk YouTube.
+m4a2yt GUI (CustomTkinter dark mode) — bungkus M4A jadi MP4 untuk YouTube.
 
-Cara pakai (sangat simpel):
-  1. Klik "Pilih File" -> pilih satu/lebih file .m4a
-  2. Pilih lokasi simpan (default: folder yang sama dengan file input)
+Alur pakai:
+  1. Klik "+  Tambah File" -> pilih satu/lebih file .m4a
+  2. Pilih lokasi simpan (default: folder yang sama dengan input)
   3. Klik "Convert" -> hasil .mp4 muncul di folder tujuan
 
-Dijalankan langsung:  python m4a2yt_gui.py
+Butuh:  customtkinter  (pip install customtkinter)
 """
 
 import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog
+
+import customtkinter as ctk
 
 import core
 
+ACCENT = "#2ea043"        # hijau tombol convert
+ACCENT_HOVER = "#3fb950"
+DANGER = "#f85149"
 
-class App:
-    def __init__(self, root):
-        self.root = root
-        root.title("m4a2yt — M4A ke YouTube")
-        root.geometry("720x560")
-        root.minsize(620, 480)
 
-        self.files = []           # daftar path file yang dipilih
-        self.out_choice = tk.StringVar(value="same")  # 'same' | 'custom'
+class M4a2YtApp(ctk.CTk):
+    def __init__(self):
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+        super().__init__()
+
+        self.title("m4a2yt — M4A ke YouTube")
+        self.geometry("760x640")
+        self.minsize(640, 560)
+
+        self.files = []          # list path (string)
+        self.out_choice = tk.StringVar(value="same")
         self.out_dir = tk.StringVar(value="")
         self._q = queue.Queue()
+        self._running = False
 
         self._build_ui()
-
-        # Cek ffmpeg sekali di awal, info jika belum ada
-        if not core.find_ffmpeg():
-            messagebox.showwarning(
-                "ffmpeg tidak ditemukan",
-                "ffmpeg tidak ditemukan.\n\n"
-                "Kalau kamu pakai versi .exe, tool ini seharusnya sudah "
-                "menyertakan ffmpeg — laporkan ke pembuatnya.\n\n"
-                "Kalau kamu jalankan dari source, taruh ffmpeg.exe di folder "
-                "'bin' sebelah script.\nUnduh: " + core.FFMPEG_DOWNLOAD)
+        self._check_ffmpeg()
 
     # ---------------------------------------------------------------- UI
     def _build_ui(self):
-        pad = {"padx": 10, "pady": 5}
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)   # baris file list membesar
 
-        # Baris 1: pilih file
-        frm_top = ttk.Frame(self.root)
-        frm_top.pack(fill="x", **pad)
-        ttk.Button(frm_top, text="Pilih File (.m4a)", command=self.pick_files)\
-            .pack(side="left")
-        ttk.Button(frm_top, text="Hapus Semua", command=self.clear_files)\
-            .pack(side="left", padx=6)
+        # --- Header ---
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=24, pady=(20, 8))
+        title = ctk.CTkLabel(
+            header, text="m4a2yt",
+            font=ctk.CTkFont(size=28, weight="bold"))
+        title.pack(anchor="w")
+        sub = ctk.CTkLabel(
+            header, text="Rekaman M4A  →  Video MP4 siap upload YouTube",
+            font=ctk.CTkFont(size=13), text_color="#8b949e")
+        sub.pack(anchor="w", pady=(2, 0))
 
-        # Daftar file
-        frm_list = ttk.Frame(self.root)
-        frm_list.pack(fill="both", expand=True, **pad)
-        self.listbox = tk.Listbox(frm_list, height=8, selectmode="extended")
-        sb = ttk.Scrollbar(frm_list, orient="vertical", command=self.listbox.yview)
-        self.listbox.configure(yscrollcommand=sb.set)
-        self.listbox.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        # --- File list ---
+        frame_files = ctk.CTkFrame(self, corner_radius=12)
+        frame_files.grid(row=3, column=0, sticky="nsew", padx=24, pady=8)
+        frame_files.grid_columnconfigure(0, weight=1)
+        frame_files.grid_rowconfigure(1, weight=1)
 
-        # Baris: lokasi output
-        frm_out = ttk.LabelFrame(self.root, text="Lokasi simpan hasil")
-        frm_out.pack(fill="x", **pad)
+        top_files = ctk.CTkFrame(frame_files, fg_color="transparent")
+        top_files.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
+        lbl_files = ctk.CTkLabel(
+            top_files, text="File Audio (.m4a)",
+            font=ctk.CTkFont(size=14, weight="bold"))
+        lbl_files.pack(side="left")
+        self.btn_add = ctk.CTkButton(
+            top_files, text="+  Tambah File", width=140, height=30,
+            command=self.pick_files)
+        self.btn_add.pack(side="right")
 
-        self.rb_same = ttk.Radiobutton(
-            frm_out, text="Folder yang sama dengan file input (default)",
+        self.scroll = ctk.CTkScrollableFrame(frame_files, corner_radius=8,
+                                             fg_color="#11151c")
+        self.scroll.grid(row=1, column=0, sticky="nsew", padx=12, pady=8)
+        self.scroll.grid_columnconfigure(0, weight=1)
+
+        self.lbl_empty = ctk.CTkLabel(
+            self.scroll, text="Belum ada file.\nKlik \u201c+ Tambah File\u201d "
+                               "untuk memilih rekaman.",
+            font=ctk.CTkFont(size=13), text_color="#6e7681",
+            justify="center", anchor="center")
+        self.lbl_empty.grid(row=0, column=0, sticky="ew", pady=36)
+
+        # --- Lokasi simpan ---
+        frame_out = ctk.CTkFrame(self, corner_radius=12)
+        frame_out.grid(row=4, column=0, sticky="ew", padx=24, pady=8)
+        lbl_out = ctk.CTkLabel(
+            frame_out, text="Lokasi Simpan",
+            font=ctk.CTkFont(size=14, weight="bold"))
+        lbl_out.grid(row=0, column=0, columnspan=3, sticky="w",
+                     padx=12, pady=(10, 2))
+
+        self.rb_same = ctk.CTkRadioButton(
+            frame_out, text="Folder yang sama dengan file input (default)",
             variable=self.out_choice, value="same", command=self._toggle_out)
-        self.rb_same.pack(anchor="w", padx=8, pady=(6, 2))
+        self.rb_same.grid(row=1, column=0, columnspan=3, sticky="w",
+                          padx=12, pady=(2, 2))
 
-        self.rb_custom = ttk.Radiobutton(
-            frm_out, text="Pilih folder lain (save as...):",
-            variable=self.out_choice, value="custom", command=self._toggle_out)
-        self.rb_custom.pack(anchor="w", padx=8)
+        self.rb_custom = ctk.CTkRadioButton(
+            frame_out, text="Folder lain:", variable=self.out_choice,
+            value="custom", command=self._toggle_out)
+        self.rb_custom.grid(row=2, column=0, sticky="w", padx=12, pady=(2, 6))
 
-        frm_custom = ttk.Frame(frm_out)
-        frm_custom.pack(fill="x", padx=8, pady=(2, 8))
-        self.ent_out = ttk.Entry(frm_custom, textvariable=self.out_dir,
-                                 state="disabled")
-        self.ent_out.pack(side="left", fill="x", expand=True)
-        self.btn_browse = ttk.Button(frm_custom, text="Browse...",
-                                     command=self.pick_outdir, state="disabled")
-        self.btn_browse.pack(side="left", padx=6)
+        self.ent_out = ctk.CTkEntry(
+            frame_out, textvariable=self.out_dir, state="disabled",
+            placeholder_text="Pilih folder tujuan...")
+        self.ent_out.grid(row=2, column=1, sticky="ew", padx=(2, 8), pady=(2, 6))
+        frame_out.grid_columnconfigure(1, weight=1)
+        self.btn_browse = ctk.CTkButton(
+            frame_out, text="Browse", width=90, height=30,
+            command=self.pick_outdir, state="disabled")
+        self.btn_browse.grid(row=2, column=2, sticky="e", padx=(0, 12), pady=(2, 6))
 
-        # Tombol convert + progress
-        frm_go = ttk.Frame(self.root)
-        frm_go.pack(fill="x", **pad)
-        self.btn_go = ttk.Button(frm_go, text="Convert", command=self.start)
-        self.btn_go.pack(side="left")
-        self.progress = ttk.Progressbar(frm_go, mode="determinate")
-        self.progress.pack(side="left", fill="x", expand=True, padx=8)
+        # --- Convert + progress ---
+        self.btn_go = ctk.CTkButton(
+            self, text="Convert", height=44,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=self.start)
+        self.btn_go.grid(row=5, column=0, sticky="ew", padx=24, pady=(6, 4))
 
-        # Log hasil
-        frm_log = ttk.LabelFrame(self.root, text="Hasil")
-        frm_log.pack(fill="both", expand=True, **pad)
-        self.txt = tk.Text(frm_log, height=10, state="disabled", wrap="word")
-        sb2 = ttk.Scrollbar(frm_log, orient="vertical", command=self.txt.yview)
-        self.txt.configure(yscrollcommand=sb2.set)
-        self.txt.pack(side="left", fill="both", expand=True)
-        sb2.pack(side="right", fill="y")
+        self.progress = ctk.CTkProgressBar(self, mode="determinate", height=8)
+        self.progress.grid(row=6, column=0, sticky="ew", padx=24, pady=(2, 4))
+        self.progress.set(0)
+
+        # --- Log ---
+        self.txt = ctk.CTkTextbox(self, height=120, corner_radius=12,
+                                  wrap="word", fg_color="#11151c",
+                                  border_width=1, border_color="#21262d")
+        self.txt.grid(row=7, column=0, sticky="ew", padx=24, pady=(4, 20))
+        self.txt.configure(state="disabled")
 
     def _toggle_out(self):
         on = self.out_choice.get() == "custom"
@@ -119,88 +154,143 @@ class App:
         for p in paths:
             if p not in self.files:
                 self.files.append(p)
-                self.listbox.insert("end", p)
+        self._render_files()
+
+    def _render_files(self):
+        for w in self.scroll.winfo_children():
+            w.destroy()
+        if not self.files:
+            self.lbl_empty = ctk.CTkLabel(
+                self.scroll, text="Belum ada file.\nKlik \u201c+ Tambah File\u201d "
+                                   "untuk memilih rekaman.",
+                font=ctk.CTkFont(size=13), text_color="#6e7681",
+                justify="center", anchor="center")
+            self.lbl_empty.grid(row=0, column=0, sticky="ew", pady=36)
+            return
+
+        for i, p in enumerate(self.files):
+            row = ctk.CTkFrame(self.scroll, corner_radius=8,
+                               fg_color="#1b2029")
+            row.grid(row=i, column=0, sticky="ew", pady=3)
+            row.grid_columnconfigure(0, weight=1)
+
+            name = os.path.basename(p)
+            d = os.path.dirname(p)
+            txt = ctk.CTkLabel(
+                row, text=name, font=ctk.CTkFont(size=13, weight="bold"),
+                anchor="w", justify="left")
+            txt.grid(row=0, column=0, sticky="w", padx=(12, 8), pady=(8, 0))
+            sub = ctk.CTkLabel(
+                row, text=d, font=ctk.CTkFont(size=11),
+                text_color="#6e7681", anchor="w", justify="left")
+            sub.grid(row=1, column=0, sticky="w", padx=(12, 8), pady=(0, 8))
+
+            remove = ctk.CTkButton(
+                row, text="✕", width=30, height=30, fg_color="transparent",
+                hover_color="#2d333e", text_color=DANGER,
+                command=lambda path=p: self._remove_file(path))
+            remove.grid(row=0, column=1, rowspan=2, padx=(0, 8), pady=8)
+
+    def _remove_file(self, path):
+        if path in self.files:
+            self.files.remove(path)
+        self._render_files()
 
     def clear_files(self):
         self.files.clear()
-        self.listbox.delete(0, "end")
+        self._render_files()
 
     def pick_outdir(self):
         d = filedialog.askdirectory(title="Pilih folder tujuan")
         if d:
             self.out_dir.set(d)
 
-    def _log(self, msg):
+    def _log(self, msg, color=None):
         self.txt.configure(state="normal")
-        self.txt.insert("end", msg + "\n")
+        tag = color if color else "default"
+        self.txt.tag_config("ok", foreground=ACCENT)
+        self.txt.tag_config("err", foreground=DANGER)
+        self.txt.tag_config("default", foreground="#c9d1d9")
+        self.txt.insert("end", msg + "\n", tag)
         self.txt.see("end")
         self.txt.configure(state="disabled")
 
+    def _check_ffmpeg(self):
+        if not core.find_ffmpeg():
+            self._log("⚠ ffmpeg tidak ditemukan. " + core.FFMPEG_DOWNLOAD, "err")
+
     # ------------------------------------------------------- konversi
     def start(self):
+        if self._running:
+            return
         if not self.files:
-            messagebox.showinfo("Belum ada file", "Klik 'Pilih File' dulu.")
+            self._log("Belum ada file. Klik \u201c+ Tambah File\u201d dulu.", "err")
             return
         ffmpeg = core.find_ffmpeg()
         if not ffmpeg:
-            messagebox.showerror(
-                "ffmpeg tidak ditemukan",
-                "Tidak ketemu ffmpeg.\nBaca README.md cara pasangnya: "
-                + core.FFMPEG_DOWNLOAD)
+            self._log("ffmpeg tidak ditemukan — baca README.md.", "err")
             return
         if self.out_choice.get() == "custom" and not self.out_dir.get().strip():
-            messagebox.showwarning("Folder belum dipilih",
-                                   "Pilih folder tujuan dulu.")
+            self._log("Pilih folder tujuan dulu.", "err")
             return
 
-        out_dir = self.out_dir.get().strip() if self.out_choice.get() == "custom" else None
+        out_dir = (self.out_dir.get().strip()
+                   if self.out_choice.get() == "custom" else None)
 
-        self.btn_go.configure(state="disabled")
+        self._running = True
+        self.btn_go.configure(state="disabled", text="Memproses...")
         self.txt.configure(state="normal")
         self.txt.delete("1.0", "end")
         self.txt.configure(state="disabled")
-        self.progress.configure(maximum=len(self.files), value=0)
+        self.progress.set(0)
 
-        t = threading.Thread(target=self._worker, args=(ffmpeg, out_dir), daemon=True)
+        t = threading.Thread(target=self._worker, args=(ffmpeg, out_dir),
+                             daemon=True)
         t.start()
-        self.root.after(100, self._poll)
+        self.after(100, self._poll)
 
     def _worker(self, ffmpeg, out_dir):
         total = len(self.files)
+        ok_count = 0
         for i, src in enumerate(self.files, 1):
             ok, dst, info, note = core.convert_one(
                 src, ffmpeg, res=core.DEFAULT_RES, out_dir=out_dir)
             name = os.path.basename(src)
             if ok:
-                self._q.put(("ok", "{} -> {}".format(name, dst) +
-                                  "  ({}, audio {})".format(info, note), i))
+                ok_count += 1
+                self._q.put(("ok", "[✓] {} → {}\n       ({}, audio {})\n"
+                             .format(name, os.path.basename(dst), info, note), i))
             else:
-                self._q.put(("err", "{} GAGAL: {}".format(name, info), i))
-        self._q.put(("done", "Selesai. Total {} file.".format(total), total))
+                self._q.put(("err", "[✗] {} GAGAL — {}\n".format(name, info), i))
+        self._q.put(("done", ok_count, total))
 
     def _poll(self):
         try:
             while True:
-                kind, msg, i = self._q.get_nowait()
-                self.progress.configure(value=i)
-                if kind == "done":
-                    self.btn_go.configure(state="normal")
-                self._log(msg)
+                kind, payload, i = self._q.get_nowait()
+                if kind in ("ok", "err"):
+                    self.progress.set(i / len(self.files))
+                if kind == "ok":
+                    self._log(payload, "ok")
+                elif kind == "err":
+                    self._log(payload, "err")
+                elif kind == "done":
+                    total = i
+                    ok = payload
+                    self.progress.set(1.0)
+                    self._running = False
+                    self.btn_go.configure(state="normal", text="Convert")
+                    self._log("Selesai: {} dari {} file berhasil.".format(ok, total),
+                              "ok" if ok else "err")
+                    return
         except queue.Empty:
             pass
-        # terus polling sampai proses selesai
-        if self.btn_go["state"] == "disabled":
-            self.root.after(100, self._poll)
+        self.after(100, self._poll)
 
 
 def main():
-    root = tk.Tk()
-    try:
-        root.tk.call("tk", "scaling", 1.3)  # font lebih besar, mudah dibaca
-    except Exception:
-        pass
-    App(root)
-    root.mainloop()
+    app = M4a2YtApp()
+    app.mainloop()
 
 
 if __name__ == "__main__":
