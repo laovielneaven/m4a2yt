@@ -1,0 +1,60 @@
+name: build-windows-exe
+
+# Build EXE Windows secara otomatis. Hasil .exe = satu file mandiri
+# (Python + tkinter + ffmpeg + ffprobe semua di dalam). Tinggal download & klik.
+#
+# Dipicu: manual (workflow_dispatch) atau saat push tag "v*".
+# Hasil bisa diunduh dari tab Actions -> pilih run -> Artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Download ffmpeg (static build)
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg
+          $bin = Get-ChildItem -Path ffmpeg -Recurse -Filter ffmpeg.exe |
+                 Select-Object -First 1
+          $probe = Get-ChildItem -Path ffmpeg -Recurse -Filter ffprobe.exe |
+                   Select-Object -First 1
+          Copy-Item $bin.FullName -Destination .\ffmpeg.exe
+          Copy-Item $probe.FullName -Destination .\ffprobe.exe
+          Write-Host "ffmpeg: $($bin.FullName)"
+          Write-Host "ffprobe: $($probe.FullName)"
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller --onefile --windowed `
+            --name m4a2yt `
+            --add-binary "ffmpeg.exe;." `
+            --add-binary "ffprobe.exe;." `
+            m4a2yt_gui.py
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4a2yt-windows
+          path: dist/m4a2yt.exe
+          if-no-files-found: error
