@@ -253,8 +253,14 @@ class M4a2YtApp(ctk.CTk):
         total = len(self.files)
         ok_count = 0
         for i, src in enumerate(self.files, 1):
+            # callback progres real-time; payload = rasio 0..1 per file
+            def _prog(ratio, i=i, total=total):
+                overall = (i - 1 + ratio) / total
+                self._q.put(("progress", overall, i))
+
             ok, dst, info, note = core.convert_one(
-                src, ffmpeg, res=core.DEFAULT_RES, out_dir=out_dir)
+                src, ffmpeg, res=core.DEFAULT_RES, out_dir=out_dir,
+                progress_cb=_prog)
             name = os.path.basename(src)
             if ok:
                 ok_count += 1
@@ -268,6 +274,9 @@ class M4a2YtApp(ctk.CTk):
         try:
             while True:
                 kind, payload, i = self._q.get_nowait()
+                if kind == "progress":
+                    self.progress.set(payload)
+                    continue
                 if kind in ("ok", "err"):
                     self.progress.set(i / len(self.files))
                 if kind == "ok":
